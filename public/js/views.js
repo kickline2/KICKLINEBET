@@ -167,7 +167,7 @@ export function renderSlip(container) {
           field('Stake (GHS)', stakeInput),
           h('div', { class: 'quick-stakes' }, [5, 10, 20, 50].map((n) => h('button', { class: 'chip', onclick: () => { stakeInput.value = n.toFixed(2); draw(); } }, `+${n}`))),
           h('div', { class: 'row payout' }, h('span', null, 'Potential payout'), h('strong', null, money(Math.round(payout * 100)))),
-          h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: acceptHigher, onchange: (e) => { acceptHigher = e.target.checked; } }), ' Accept higher odds automatically'),
+          h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: acceptHigher, onchange: (e) => { acceptHigher = e.target.checked; } }), h('span', null, 'Accept higher odds automatically')),
           state.user ? placeBtn : h('a', { class: 'btn btn-primary btn-block', href: '#/login' }, 'Log in to place bet'),
           h('p', { class: 'muted small center' }, 'Bet responsibly. 18+ only.')),
       ]);
@@ -277,7 +277,7 @@ export function registerView(root) {
     field('Phone (optional)', input({ type: 'tel', name: 'phone', autocomplete: 'tel', placeholder: '024 123 4567' })),
     field('Date of birth', input({ type: 'date', name: 'dateOfBirth', max: max.toISOString().slice(0, 10), required: true }), 'You must be 18 or older.'),
     field('Password', input({ type: 'password', name: 'password', autocomplete: 'new-password', minlength: 10, required: true }), 'At least 10 characters. Use a passphrase.'),
-    h('label', { class: 'check' }, h('input', { type: 'checkbox', name: 'acceptTerms' }), ' I am 18 or older and accept the ', h('a', { href: '#/terms' }, 'terms'), ' and ', h('a', { href: '#/responsible' }, 'responsible gambling policy'), '.'),
+    h('label', { class: 'check' }, h('input', { type: 'checkbox', name: 'acceptTerms' }), h('span', null, 'I am 18 or older and accept the ', h('a', { href: '#/terms' }, 'terms'), ' and ', h('a', { href: '#/responsible' }, 'responsible gambling policy'), '.')),
     h('button', { class: 'btn btn-primary btn-block', type: 'submit' }, 'Create account'),
     h('p', { class: 'muted center' }, 'Already have an account? ', h('a', { href: '#/login' }, 'Log in')));
   form.addEventListener('submit', async (e) => {

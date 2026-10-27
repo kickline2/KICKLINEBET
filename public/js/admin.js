@@ -356,7 +356,7 @@ const LABELS = {
 async function settings(root) {
   const { settings: s } = await api('GET', '/api/admin/settings');
   const form = h('form', { class: 'stack card' }, Object.keys(LABELS).map((k) => typeof s[k] === 'boolean'
-    ? h('label', { class: 'check' }, h('input', { type: 'checkbox', name: k, checked: s[k] }), ` ${LABELS[k]}`)
+    ? h('label', { class: 'check' }, h('input', { type: 'checkbox', name: k, checked: s[k] }), h('span', null, LABELS[k]))
     : field(MONEY_KEYS.includes(k) ? `${LABELS[k]} (GHS)` : LABELS[k], input({ name: k, value: MONEY_KEYS.includes(k) ? toMajor(s[k]) : s[k], required: true, inputmode: 'decimal' }))),
   h('button', { class: 'btn btn-primary', type: 'submit' }, 'Save settings'));
   form.addEventListener('submit', async (e) => {
