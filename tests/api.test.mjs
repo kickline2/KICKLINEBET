@@ -393,3 +393,51 @@ test('odds feed import applies margin, respects manual overrides, and auto-settl
     delete process.env.ODDS_API_KEY;
   }
 });
+
+test('odds sync respects the daily API credit budget and quota reserve', async () => {
+  process.env.ODDS_API_KEY = 'test-key';
+  process.env.ODDS_DAILY_CREDIT_BUDGET = '1';
+  await query("DELETE FROM settings WHERE key IN ('odds_sync_state','odds_sync')");
+  const realFetch = globalThis.fetch;
+  let remaining = 100;
+  let oddsCalls = 0;
+  globalThis.fetch = async (url) => {
+    const u = new URL(String(url));
+    if (u.pathname.endsWith('/v4/sports')) {
+      return Response.json([
+        { key: 'soccer_epl', group: 'Soccer', title: 'EPL', active: true, has_outrights: false },
+        { key: 'basketball_nba', group: 'Basketball', title: 'NBA', active: true, has_outrights: false },
+      ]);
+    }
+    if (u.pathname.endsWith('/odds')) {
+      oddsCalls++;
+      remaining -= 1;
+      const k = u.pathname.split('/')[3];
+      return Response.json([{ id: `b-${k}`, commence_time: new Date(Date.now() + 9e6).toISOString(), home_team: `H ${k}`, away_team: `A ${k}`,
+        bookmakers: [{ markets: [{ key: 'h2h', outcomes: [{ name: `H ${k}`, price: 1.9 }, { name: `A ${k}`, price: 2.0 }] }] }] }],
+      { headers: { 'x-requests-remaining': String(remaining) } });
+    }
+    return Response.json([]);
+  };
+  try {
+    const { syncOdds } = await import('../src/server/odds.mjs');
+    let r = await syncOdds({ force: true });
+    assert.equal(r.processed, 1);
+    assert.equal(r.stoppedBy, 'daily_credit_budget');
+    assert.equal(r.sports.soccer_epl?.upserted, 1, 'popular league goes first');
+    r = await syncOdds({ force: true });
+    assert.equal(r.processed, 0, 'budget for today is spent');
+    assert.equal(oddsCalls, 1);
+    // Reserve guard: plenty of daily budget but the monthly quota is nearly gone
+    process.env.ODDS_DAILY_CREDIT_BUDGET = '100';
+    remaining = 10;
+    await query("UPDATE settings SET value = jsonb_set(value, '{remaining}', '\"10\"') WHERE key = 'odds_sync_state'");
+    r = await syncOdds({ force: true });
+    assert.equal(r.processed, 0);
+    assert.equal(r.stoppedBy, 'monthly_quota_reserve');
+  } finally {
+    globalThis.fetch = realFetch;
+    delete process.env.ODDS_API_KEY;
+    delete process.env.ODDS_DAILY_CREDIT_BUDGET;
+  }
+});
