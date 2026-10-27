@@ -77,14 +77,15 @@ async function overview(root) {
         h('dt', null, 'Paystack payments'), h('dd', null, o.integrations.paystack ? 'Connected' : 'Not configured (set PAYSTACK_SECRET_KEY)'),
         h('dt', null, 'Paystack transfers'), h('dd', null, o.integrations.paystackTransfers ? 'Automatic payouts on' : 'Manual payouts'),
         h('dt', null, 'Odds feed'), h('dd', null, o.integrations.oddsApi ? 'The Odds API connected' : 'Not configured (set ODDS_API_KEY)'),
-        h('dt', null, 'Last odds sync'), h('dd', null, sync ? `${fmtDateTime(sync.at)} · ${sync.leaguesAvailable ?? '?'} leagues in season · API credits left: ${sync.remaining ?? '?'}` : 'Never')),
+        h('dt', null, 'Last odds sync'), h('dd', null, sync ? `${fmtDateTime(sync.at)} · ${sync.leaguesAvailable ?? '?'} leagues in season · API credits left this month: ${sync.remaining ?? '?'} · used today: ${sync.creditsUsedToday ?? 0}/${sync.dailyBudget ?? '?'}` : 'Never')),
       o.integrations.oddsApi ? h('button', { class: 'btn btn-ghost', onclick: (e) => busy(e.target, async () => {
         const r = await api('POST', '/api/admin/odds/sync');
         if (!r.ok) { toast(r.reason || 'Sync failed', 'error'); return; }
         const vals = Object.values(r.sports || {});
         const events = vals.reduce((a, s) => a + s.upserted, 0);
         const errors = vals.filter((s) => s.error).length;
-        toast(`Synced ${r.processed} of ${r.leaguesAvailable} leagues (${events} matches updated${errors ? `, ${errors} errors` : ''}).${r.remainingDue ? ` ${r.remainingDue} more leagues will sync automatically, or click again.` : ''}`, errors ? 'error' : 'success');
+        const why = { daily_credit_budget: `Today's API credit budget is used (${r.creditsUsedToday}/${r.dailyBudget}); more leagues sync tomorrow.`, monthly_quota_reserve: 'Odds API monthly credits are nearly exhausted; upgrade your plan or wait for the reset.', time: 'Click again to continue.' }[r.stoppedBy] || '';
+        toast(`Synced ${r.processed} of ${r.leaguesAvailable} leagues (${events} matches updated${errors ? `, ${errors} errors` : ''}). ${r.remainingDue ? `${r.remainingDue} leagues still due. ` : ''}${why}`, errors ? 'error' : 'success');
         overview(root);
       }).catch(swallow) }, 'Sync odds now') : null));
 }
