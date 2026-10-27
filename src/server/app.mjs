@@ -49,6 +49,7 @@ const ROUTES = [
   ['POST', '/api/webhooks/paystack', wallet.paystackWebhook, { webhook: true }],
   // admin
   ['GET', '/api/admin/overview', admin.overview],
+  ['GET', '/api/admin/dashboard', admin.dashboard],
   ['GET', '/api/admin/events', admin.listEvents],
   ['POST', '/api/admin/events', admin.createEvent],
   ['PATCH', '/api/admin/events/:id', admin.updateEvent],

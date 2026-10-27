@@ -450,3 +450,79 @@ export async function auditLog(ctx) {
   );
   return { entries: rows };
 }
+
+// ---------- dashboard ----------
+/** Business dashboard: KPIs with previous-period comparison, daily series, risk and activity. */
+export async function dashboard(ctx) {
+  requireAdmin(ctx);
+  const days = v.oneOf(ctx.url.searchParams.get('days') || '30', 'days', ['7', '30', '90']);
+  const n = Number(days);
+  const kpiSql = `
+    SELECT
+      (SELECT count(*) FROM users WHERE created_at >= $1 AND created_at < $2)::int AS new_players,
+      (SELECT count(DISTINCT user_id) FROM bets WHERE created_at >= $1 AND created_at < $2)::int AS active_bettors,
+      (SELECT count(*) FROM bets WHERE created_at >= $1 AND created_at < $2)::int AS bets,
+      (SELECT coalesce(sum(stake),0) FROM bets WHERE created_at >= $1 AND created_at < $2)::bigint AS stakes,
+      (SELECT coalesce(sum(stake),0) FROM bets WHERE status <> 'open' AND settled_at >= $1 AND settled_at < $2)::bigint AS settled_stakes,
+      (SELECT coalesce(sum(payout),0) FROM bets WHERE status <> 'open' AND settled_at >= $1 AND settled_at < $2)::bigint AS payouts,
+      (SELECT coalesce(sum(amount),0) FROM deposits WHERE status = 'success' AND completed_at >= $1 AND completed_at < $2)::bigint AS deposits,
+      (SELECT coalesce(sum(amount),0) FROM withdrawals WHERE status = 'paid' AND updated_at >= $1 AND updated_at < $2)::bigint AS withdrawals`;
+  const cur = (await query(kpiSql, [new Date(Date.now() - n * 86400_000), new Date()])).rows[0];
+  const prev = (await query(kpiSql, [new Date(Date.now() - 2 * n * 86400_000), new Date(Date.now() - n * 86400_000)])).rows[0];
+  for (const r of [cur, prev]) r.ggr = r.settled_stakes - r.payouts;
+
+  const series = (await query(
+    `WITH d AS (SELECT generate_series((current_date - ($1::int - 1)), current_date, interval '1 day')::date AS day)
+     SELECT to_char(d.day, 'YYYY-MM-DD') AS day,
+       (SELECT coalesce(sum(stake),0) FROM bets WHERE created_at::date = d.day)::bigint AS stakes,
+       (SELECT count(*) FROM bets WHERE created_at::date = d.day)::int AS bets,
+       (SELECT coalesce(sum(payout),0) FROM bets WHERE status <> 'open' AND settled_at::date = d.day)::bigint AS payouts,
+       (SELECT coalesce(sum(stake - payout),0) FROM bets WHERE status <> 'open' AND settled_at::date = d.day)::bigint AS ggr,
+       (SELECT coalesce(sum(amount),0) FROM deposits WHERE status = 'success' AND completed_at::date = d.day)::bigint AS deposits,
+       (SELECT coalesce(sum(amount),0) FROM withdrawals WHERE status = 'paid' AND updated_at::date = d.day)::bigint AS withdrawals,
+       (SELECT count(*) FROM users WHERE created_at::date = d.day)::int AS new_players
+     FROM d ORDER BY d.day`,
+    [n]
+  )).rows;
+
+  const [snapshot, leagues, exposure, bigBets, statusMix, feed] = await Promise.all([
+    query(`SELECT (SELECT count(*) FROM users)::int AS players,
+                  (SELECT coalesce(sum(balance),0) FROM wallets)::bigint AS balances,
+                  (SELECT count(*) FROM bets WHERE status='open')::int AS open_bets,
+                  (SELECT coalesce(sum(stake),0) FROM bets WHERE status='open')::bigint AS open_stakes,
+                  (SELECT coalesce(sum(potential_payout),0) FROM bets WHERE status='open')::bigint AS open_liability,
+                  (SELECT count(*) FROM withdrawals WHERE status='pending')::int AS pending_withdrawals,
+                  (SELECT coalesce(sum(amount),0) FROM withdrawals WHERE status='pending')::bigint AS pending_withdrawals_amount,
+                  (SELECT count(*) FROM users WHERE kyc_status='pending')::int AS kyc_pending,
+                  (SELECT count(*) FROM events WHERE status='scheduled' AND start_time > now())::int AS upcoming_events,
+                  (SELECT count(*) FROM events WHERE status='scheduled' AND start_time < now() - interval '2 hours')::int AS awaiting_results`),
+    query(`SELECT coalesce(e.league, e.sport_title) AS league, e.sport_title AS sport,
+                  count(DISTINCT b.id)::int AS bets, coalesce(sum(b.stake / bl.n),0)::bigint AS stakes
+             FROM bets b
+             JOIN (SELECT bet_id, count(*) AS n FROM bet_legs GROUP BY bet_id) bl ON bl.bet_id = b.id
+             JOIN bet_legs l ON l.bet_id = b.id JOIN events e ON e.id = l.event_id
+            WHERE b.created_at >= now() - make_interval(days => $1)
+            GROUP BY 1, 2 ORDER BY stakes DESC LIMIT 8`, [n]),
+    // Worst-case liability per selection from open single bets (accas spread risk, shown separately).
+    query(`SELECT s.id, s.name AS selection, m.name AS market, e.home_team || ' v ' || e.away_team AS event, e.start_time,
+                  count(*)::int AS bets, sum(b.stake)::bigint AS stakes, sum(b.potential_payout)::bigint AS liability
+             FROM bets b JOIN bet_legs l ON l.bet_id = b.id JOIN selections s ON s.id = l.selection_id
+             JOIN markets m ON m.id = l.market_id JOIN events e ON e.id = l.event_id
+            WHERE b.status = 'open' AND (SELECT count(*) FROM bet_legs x WHERE x.bet_id = b.id) = 1
+            GROUP BY s.id, s.name, m.name, e.home_team, e.away_team, e.start_time
+            ORDER BY liability DESC LIMIT 8`),
+    query(`SELECT b.id, b.user_id, u.display_name, b.stake, b.potential_payout, b.payout, b.status, b.total_odds, b.created_at,
+                  (SELECT count(*) FROM bet_legs l WHERE l.bet_id = b.id)::int AS legs
+             FROM bets b JOIN users u ON u.id = b.user_id
+            WHERE b.created_at >= now() - make_interval(days => $1)
+            ORDER BY b.stake DESC, b.id DESC LIMIT 8`, [n]),
+    query(`SELECT status, count(*)::int AS n FROM bets WHERE created_at >= now() - make_interval(days => $1) GROUP BY status`, [n]),
+    query("SELECT value FROM settings WHERE key = 'odds_sync'"),
+  ]);
+  return {
+    days: n, kpis: cur, previous: prev, series: series, snapshot: snapshot.rows[0],
+    topLeagues: leagues.rows, exposure: exposure.rows, bigBets: bigBets.rows,
+    statusMix: Object.fromEntries(statusMix.rows.map((r) => [r.status, r.n])),
+    integrations: { paystack: paystackEnabled(), paystackTransfers: config.paystackTransfersEnabled, oddsApi: Boolean(config.oddsApiKey), lastOddsSync: feed.rows[0]?.value || null },
+  };
+}
