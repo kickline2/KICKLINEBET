@@ -441,3 +441,21 @@ test('odds sync respects the daily API credit budget and quota reserve', async (
     delete process.env.ODDS_DAILY_CREDIT_BUDGET;
   }
 });
+
+test('admin dashboard returns KPIs, daily series, risk and activity', async () => {
+  const u = await newUser('dash@x.test');
+  await fund(admin, u.user.id, '50.00');
+  const ev = await createEvent(admin, { home: 'D1', away: 'D2' });
+  const s = ev.markets[0].selections[0];
+  await u.post('/api/bets', { idempotencyKey: idem(), stake: '20.00', selections: [{ selectionId: s.id, odds: s.odds }] });
+  assert.equal((await u.get('/api/admin/dashboard')).status, 403);
+  const r = await admin.get('/api/admin/dashboard?days=7');
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.series.length, 7);
+  assert.ok(r.body.kpis.stakes >= 2000);
+  assert.ok(r.body.series.at(-1).stakes >= 2000);
+  const exp = r.body.exposure.find((x) => Number(x.id) === s.id);
+  assert.equal(exp.liability, 4200);
+  assert.ok(r.body.topLeagues.some((l) => l.league === 'Ghana Premier League'));
+  assert.equal((await admin.get('/api/admin/dashboard?days=5')).status, 400);
+});
