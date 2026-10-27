@@ -115,7 +115,18 @@ select.input { appearance: auto; }
 .sports-nav a { display: flex; justify-content: space-between; padding: 8px 10px; border-radius: 8px; color: var(--text); font-weight: 600; }
 .sports-nav a:hover, .sports-nav a.active { background: var(--card); text-decoration: none; }
 .sports-nav a.active { color: var(--accent); }
-.count { color: var(--muted); font-weight: 500; font-size: .85rem; }
+.count { color: var(--muted); font-weight: 500; font-size: .85rem; margin-left: 8px; }
+.sports-nav { max-height: calc(100vh - 110px); overflow-y: auto; }
+.group-row { display: flex; align-items: center; }
+.group-row a { flex: 1; min-width: 0; }
+.group-toggle { font-size: .9rem; padding: 6px 8px; }
+.league-list { display: flex; flex-direction: column; margin: 0 0 6px 10px; border-left: 1px solid var(--line); }
+.league-list[hidden] { display: none; }
+.league-chips { display: none; }
+.chip.active { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+a.chip:hover { text-decoration: none; }
+.sports-nav a.league-link { font-weight: 500; font-size: .9rem; padding: 6px 10px; color: var(--muted); }
+.sports-nav a.league-link.active, .sports-nav a.league-link:hover { color: var(--text); }
 .events-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
 .events-head h1 { margin: 0; }
 .events-head .input { max-width: 280px; }
@@ -235,7 +246,12 @@ select.input { appearance: auto; }
   .topbar { flex-wrap: wrap; gap: 8px; padding: 10px 16px; }
   .nav { flex: 1 1 100%; overflow-x: auto; padding-bottom: 2px; }
   .book, .admin { grid-template-columns: minmax(0, 1fr); }
-  .sports-nav, .admin-nav { position: static; flex-direction: row; overflow-x: auto; }
+  .sports-nav, .admin-nav { position: static; flex-direction: row; overflow-x: auto; max-height: none; }
+  .league-list { display: none !important; }
+  .league-chips { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 6px; margin-bottom: 6px; }
+  .league-chips .chip { white-space: nowrap; }
+  .group-toggle { display: none; }
+  .sport-group, .group-row { display: flex; }
   .sports-nav a, .admin-nav a { white-space: nowrap; gap: 6px; }
   .sports-col .col-title { display: none; }
   .grid-2 { grid-template-columns: minmax(0, 1fr); }
