@@ -38,6 +38,10 @@ async function logout() {
   location.hash = '#/';
 }
 
+const dec = (x) => {
+  try { return x ? decodeURIComponent(x) : null; } catch { return null; }
+};
+
 const PROTECTED = new Set(['bets', 'wallet', 'account', 'admin']);
 
 async function route() {
@@ -62,6 +66,8 @@ async function route() {
     switch (top) {
       case '': cleanup = await sportsbookView(main, {}); break;
       case 'sport': cleanup = await sportsbookView(main, { sport: parts[1] }); break;
+      case 'league': cleanup = await sportsbookView(main, { sport: parts[1], league: dec(parts[2]) }); break;
+      case 'group': cleanup = await sportsbookView(main, { group: dec(parts[1]) }); break;
       case 'login': state.user ? (location.hash = '#/') : loginView(main); break;
       case 'register': state.user ? (location.hash = '#/') : registerView(main); break;
       case 'bets': await betsView(main); break;

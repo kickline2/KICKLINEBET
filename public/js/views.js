@@ -11,26 +11,55 @@ const go = (hash) => {
 let eventsCache = new Map(); // selectionId -> {event, market, selection}
 
 export async function sportsbookView(root, params) {
-  const sport = params.sport || null;
+  const { sport = null, league = null, group = null } = params;
+  const title = league || group || 'All upcoming matches';
   const search = input({ type: 'search', placeholder: 'Search teams or leagues', 'aria-label': 'Search events', maxlength: 60 });
   const list = h('div', { class: 'events' }, skeleton());
-  const sportsNav = h('nav', { class: 'sports-nav', 'aria-label': 'Sports' });
+  const sportsNav = h('nav', { class: 'sports-nav', 'aria-label': 'Sports and leagues' });
+  const leagueChips = h('div', { class: 'league-chips' });
   mount(root, h('div', { class: 'book' },
     h('aside', { class: 'sports-col' }, h('h2', { class: 'col-title' }, 'Sports'), sportsNav),
     h('section', { class: 'events-col' },
-      h('div', { class: 'events-head' }, h('h1', null, sport ? 'Upcoming' : 'All upcoming matches'), search),
+      h('div', { class: 'events-head' }, h('h1', null, title), search),
+      leagueChips,
       list)));
 
-  api('GET', '/api/sports').then(({ sports }) => {
+  api('GET', '/api/sports').then(({ groups }) => {
+    const activeGroup = group || groups.find((g) => g.leagues.some((l) => l.key === sport && (!league || l.league === league)))?.title;
+    const ag = groups.find((g) => g.title === activeGroup);
+    if (ag && ag.leagues.length > 1) {
+      mount(leagueChips, ag.leagues.map((l) => h('a', {
+        class: `chip${l.key === sport && l.league === league ? ' active' : ''}`,
+        href: `#/league/${encodeURIComponent(l.key)}/${encodeURIComponent(l.league)}`,
+      }, `${l.league} (${l.events})`)));
+    }
     mount(sportsNav,
-      h('a', { href: '#/', class: !sport ? 'active' : '' }, 'All sports'),
-      sports.map((s) => h('a', { href: `#/sport/${encodeURIComponent(s.key)}`, class: s.key === sport ? 'active' : '' }, s.title, h('span', { class: 'count' }, s.events))));
+      h('a', { href: '#/', class: !sport && !group ? 'active' : '' }, 'All sports', h('span', { class: 'count' }, groups.reduce((a, g) => a + g.events, 0))),
+      groups.map((g) => {
+        const open = g.title === activeGroup;
+        const leagues = h('div', { class: 'league-list', hidden: !open },
+          g.leagues.map((l) => h('a', {
+            href: `#/league/${encodeURIComponent(l.key)}/${encodeURIComponent(l.league)}`,
+            class: `league-link${l.key === sport && l.league === league ? ' active' : ''}`,
+          }, l.league, h('span', { class: 'count' }, l.events))));
+        return h('div', { class: 'sport-group' },
+          h('div', { class: 'group-row' },
+            h('a', { href: `#/group/${encodeURIComponent(g.title)}`, class: group === g.title ? 'active' : '' }, g.title, h('span', { class: 'count' }, g.events)),
+            h('button', { class: 'icon-btn group-toggle', 'aria-label': `Show ${g.title} leagues`, 'aria-expanded': String(open), onclick: (e) => {
+              leagues.hidden = !leagues.hidden;
+              e.currentTarget.setAttribute('aria-expanded', String(!leagues.hidden));
+              e.currentTarget.textContent = leagues.hidden ? '▸' : '▾';
+            } }, open ? '▾' : '▸')),
+          leagues);
+      }));
   }).catch(swallow);
 
   let timer;
   const load = async () => {
     const qs = new URLSearchParams();
     if (sport) qs.set('sport', sport);
+    if (league) qs.set('league', league);
+    if (group) qs.set('group', group);
     if (search.value.trim()) qs.set('q', search.value.trim());
     try {
       const { events } = await api('GET', `/api/events?${qs}`);
