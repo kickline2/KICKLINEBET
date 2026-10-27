@@ -88,6 +88,13 @@ export const config = {
   get oddsApiRegions() {
     return env('ODDS_API_REGIONS', 'eu');
   },
+  // Credit guards so a small Odds API plan is never exhausted early in the month.
+  get oddsDailyCreditBudget() {
+    return int('ODDS_DAILY_CREDIT_BUDGET', 15);
+  },
+  get oddsCreditReserve() {
+    return int('ODDS_CREDIT_RESERVE', 10);
+  },
   get oddsMargin() {
     const m = Number(env('ODDS_MARGIN', '0.05'));
     return Number.isFinite(m) && m >= 0 && m < 0.5 ? m : 0.05;

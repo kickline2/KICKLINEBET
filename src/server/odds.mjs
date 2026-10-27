@@ -92,7 +92,7 @@ async function upsertEvent(sport, ev, margin) {
 
 /** Auto-settle h2h markets of finished imported events using official scores. */
 async function settleFromScores(sportKey) {
-  const { data } = await oddsApi(`/sports/${sportKey}/scores`, { daysFrom: '3', dateFormat: 'iso' });
+  const { data, remaining } = await oddsApi(`/sports/${sportKey}/scores`, { daysFrom: '3', dateFormat: 'iso' });
   let settled = 0;
   for (const s of data) {
     if (!s.completed || !Array.isArray(s.scores)) continue;
@@ -118,10 +118,17 @@ async function settleFromScores(sportKey) {
       settled++;
     });
   }
-  return settled;
+  return { settled, remaining };
 }
 
 const GROUP_NAMES = { Soccer: 'Football' };
+// Most-bet competitions get refreshed first when API credits are limited.
+const PRIORITY = [
+  'soccer_epl', 'soccer_uefa_champs_league', 'soccer_spain_la_liga', 'soccer_italy_serie_a', 'soccer_germany_bundesliga',
+  'soccer_france_ligue_one', 'soccer_uefa_europa_league', 'soccer_africa_cup_of_nations', 'soccer_fifa_world_cup',
+  'soccer_efl_champ', 'soccer_netherlands_eredivisie', 'soccer_portugal_primeira_liga', 'soccer_uefa_europa_conference_league',
+  'basketball_nba', 'soccer_usa_mls', 'tennis_atp', 'americanfootball_nfl', 'basketball_euroleague', 'icehockey_nhl',
+]
 let sportsCache = null;
 
 /** Every in-season league The Odds API covers (this call is free of quota). */
@@ -172,13 +179,35 @@ export async function syncOdds({ force = false, actorId = null, budgetMs = 20_00
   const interval = config.oddsSyncIntervalMinutes * 60_000;
   const sports = await listFeedSports();
   const state = await loadState();
+  const prio = (key) => {
+    const i = PRIORITY.indexOf(key);
+    return i < 0 ? PRIORITY.length + (key.startsWith('soccer_') ? 0 : 1) : i;
+  };
   const due = sports
     .map((sp) => ({ sp, at: state.sports[sp.key]?.at ? new Date(state.sports[sp.key].at).getTime() : 0 }))
     .filter((x) => force || Date.now() - x.at >= interval)
-    .sort((a, b) => a.at - b.at);
-  const summary = { ok: true, at: new Date().toISOString(), leaguesAvailable: sports.length, processed: 0, remainingDue: 0, sports: {}, remaining: state.remaining ?? null };
+    // Never-synced leagues first; after that stalest-first, with popular leagues treated as 6h staler.
+    .map((x) => ({ ...x, score: x.at === 0 ? -Infinity : x.at - (prio(x.sp.key) < PRIORITY.length ? 6 * 3600_000 : 0) }))
+    .sort((a, b) => a.score - b.score || prio(a.sp.key) - prio(b.sp.key));
+  const today = new Date().toISOString().slice(0, 10);
+  if (state.day?.date !== today) state.day = { date: today, used: 0 };
+  const daily = config.oddsDailyCreditBudget;
+  const regionCost = config.oddsApiRegions.split(',').filter(Boolean).length;
+  const summary = { ok: true, at: new Date().toISOString(), leaguesAvailable: sports.length, processed: 0, remainingDue: 0, sports: {}, remaining: state.remaining ?? null, creditsUsedToday: state.day.used, dailyBudget: daily, stoppedBy: null };
+  let prevRemaining = state.remaining != null ? Number(state.remaining) : null;
   for (const { sp } of due) {
     if (Date.now() - started > budgetMs) {
+      summary.stoppedBy ||= 'time';
+      summary.remainingDue++;
+      continue;
+    }
+    if (state.day.used + regionCost > daily) {
+      summary.stoppedBy ||= 'daily_credit_budget';
+      summary.remainingDue++;
+      continue;
+    }
+    if (prevRemaining !== null && prevRemaining - regionCost < config.oddsCreditReserve) {
+      summary.stoppedBy ||= 'monthly_quota_reserve';
       summary.remainingDue++;
       continue;
     }
@@ -189,11 +218,21 @@ export async function syncOdds({ force = false, actorId = null, budgetMs = 20_00
       });
       if (remaining !== null) summary.remaining = remaining;
       for (const ev of data) s[await upsertEvent(sp, ev, config.oddsMargin)]++;
-      if (config.oddsAutoSettle && (await needsScores(sp.key))) s.settled = await settleFromScores(sp.key);
+      if (config.oddsAutoSettle && (await needsScores(sp.key))) {
+        const r = await settleFromScores(sp.key);
+        s.settled = r.settled;
+        if (r.remaining !== null) summary.remaining = r.remaining;
+      }
     } catch (e) {
       console.error('[odds] sync error', sp.key, e.message);
       s.error = e.message;
     }
+    // Account actual credits spent (quota header delta; empty results are free).
+    const now = summary.remaining != null ? Number(summary.remaining) : null;
+    if (prevRemaining !== null && now !== null && prevRemaining >= now) state.day.used += prevRemaining - now;
+    else if (prevRemaining === null && !s.error) state.day.used += s.upserted ? regionCost : 0;
+    if (now !== null) prevRemaining = now;
+    summary.creditsUsedToday = state.day.used;
     state.sports[sp.key] = { at: new Date().toISOString(), title: sp.title, group: sp.group, events: s.upserted, error: s.error };
     summary.sports[sp.key] = s;
     summary.processed++;
@@ -206,7 +245,7 @@ export async function syncOdds({ force = false, actorId = null, budgetMs = 20_00
   await query(
     `INSERT INTO settings(key, value) VALUES ('odds_sync', $1)
      ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = now()`,
-    [JSON.stringify({ at: summary.at, remaining: summary.remaining, leaguesAvailable: summary.leaguesAvailable, processed: summary.processed, remainingDue: summary.remainingDue })]
+    [JSON.stringify({ at: summary.at, remaining: summary.remaining, leaguesAvailable: summary.leaguesAvailable, processed: summary.processed, remainingDue: summary.remainingDue, creditsUsedToday: summary.creditsUsedToday, dailyBudget: summary.dailyBudget, stoppedBy: summary.stoppedBy })]
   );
   if (summary.processed) await audit({ query }, { actorId, action: 'odds.sync', details: { processed: summary.processed, remainingDue: summary.remainingDue, remaining: summary.remaining } });
   return summary;
