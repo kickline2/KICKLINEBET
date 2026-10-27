@@ -335,14 +335,24 @@ test('admin balance adjustments require password + 2FA and are audited', async (
 
 test('odds feed import applies margin, respects manual overrides, and auto-settles from scores', async () => {
   process.env.ODDS_API_KEY = 'test-key';
-  process.env.ODDS_API_SPORTS = 'soccer_epl';
+  process.env.ODDS_API_SPORTS = 'all';
   const realFetch = globalThis.fetch;
   const start = new Date(Date.now() + 7200_000).toISOString();
   let completed = false;
   globalThis.fetch = async (url) => {
     const u = new URL(String(url));
     assert.equal(u.searchParams.get('apiKey'), 'test-key');
+    if (u.pathname.endsWith('/v4/sports')) {
+      return Response.json([
+        { key: 'soccer_epl', group: 'Soccer', title: 'EPL', description: 'Premier League', active: true, has_outrights: false },
+        { key: 'basketball_nba', group: 'Basketball', title: 'NBA', description: 'US Basketball', active: true, has_outrights: false },
+        { key: 'soccer_fifa_world_cup_winner', group: 'Soccer', title: 'World Cup Winner', active: true, has_outrights: true },
+        { key: 'cricket_test', group: 'Cricket', title: 'Test', active: false, has_outrights: false },
+      ]);
+    }
+    if (u.pathname.endsWith('basketball_nba/odds')) return Response.json([]);
     if (u.pathname.endsWith('/odds')) {
+      if (completed) return Response.json([]); // finished games drop out of the odds feed
       return Response.json([{ id: 'evt1', sport_title: 'EPL', commence_time: start, home_team: 'Arsenal', away_team: 'Chelsea', bookmakers: [
         { markets: [{ key: 'h2h', outcomes: [{ name: 'Arsenal', price: 2.0 }, { name: 'Chelsea', price: 3.6 }, { name: 'Draw', price: 3.4 }] }] },
         { markets: [{ key: 'h2h', outcomes: [{ name: 'Arsenal', price: 2.2 }, { name: 'Chelsea', price: 3.4 }, { name: 'Draw', price: 3.3 }] }] },
@@ -357,6 +367,12 @@ test('odds feed import applies margin, respects manual overrides, and auto-settl
     let r = await admin.post('/api/admin/odds/sync');
     assert.equal(r.status, 200, JSON.stringify(r.body));
     assert.equal(r.body.sports.soccer_epl.upserted, 1);
+    assert.equal(r.body.leaguesAvailable, 2, 'only active, non-outright leagues');
+    assert.equal(r.body.processed, 2);
+    const nav = (await new Client().get('/api/sports')).body.groups;
+    const fb = nav.find((g) => g.title === 'Football');
+    assert.ok(fb && fb.leagues.some((l) => l.key === 'soccer_epl' && l.league === 'EPL'));
+    assert.equal((await new Client().get('/api/events?group=Football&q=Arsenal')).body.events.length, 1);
     const ev = (await admin.get('/api/events?q=Arsenal')).body.events[0];
     const sel = Object.fromEntries(ev.markets[0].selections.map((s) => [s.name, s]));
     assert.equal(sel.Arsenal.odds, '1.99'); // median 2.10 * 0.95 = 1.995 -> 1.99
