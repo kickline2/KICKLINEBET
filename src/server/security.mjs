@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { promisify } from 'node:util';
-import { config } from './config.mjs';
+import { appSecret } from './secrets.mjs';
 
 const scrypt = promisify(crypto.scrypt);
 
@@ -74,8 +74,8 @@ export function safeEqual(a, b) {
 
 // ---------- Symmetric encryption for secrets at rest (AES-256-GCM) ----------
 function encKey() {
-  const secret = config.appSecret;
-  if (!secret || secret.length < 32) throw new Error('APP_SECRET is not configured (min 32 chars)');
+  const secret = appSecret();
+  if (!secret || secret.length < 32) throw new Error('App secret is not configured');
   return crypto.createHash('sha256').update(`kickline-enc:${secret}`).digest();
 }
 export function encrypt(plain) {

@@ -6,10 +6,15 @@ import * as wallet from './wallet.mjs';
 import * as admin from './admin.mjs';
 import { getSettings } from './services.mjs';
 import { paystackEnabled } from './paystack.mjs';
+import { ensureAppSecret } from './secrets.mjs';
+import { query } from './db.mjs';
 
 const ROUTES = [
   // public
-  ['GET', '/api/health', async () => ({ ok: true })],
+  ['GET', '/api/health', async () => {
+    await query('SELECT 1');
+    return { ok: true, db: true };
+  }],
   ['GET', '/api/config', publicConfig],
   ['GET', '/api/sports', betting.listSports],
   ['GET', '/api/events', betting.listEvents],
@@ -113,9 +118,10 @@ export async function handle(req, { ip = '0.0.0.0' } = {}) {
   try {
     {
       const problems = assertProductionConfig();
+      if (!(await ensureAppSecret())) problems.push('APP_SECRET missing and Netlify Blobs unavailable to generate one');
       if (problems.length) {
         console.error('[config]', problems.join('; '));
-        throw new HttpError(503, 'MISCONFIGURED', 'Service is not configured');
+        throw new HttpError(503, 'MISCONFIGURED', 'Service is not configured', { problems: problems.map((p) => p.split(' ')[0]) });
       }
     }
     const method = req.method.toUpperCase();

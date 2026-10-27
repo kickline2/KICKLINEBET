@@ -114,7 +114,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
 export function assertProductionConfig() {
   const problems = [];
   if (!config.databaseUrl) problems.push('DATABASE_URL / NETLIFY_DATABASE_URL is not set');
-  if (!config.appSecret || config.appSecret.length < 32)
-    problems.push('APP_SECRET must be set to a random string of at least 32 characters');
+  if (config.appSecret && config.appSecret.length < 32)
+    problems.push('APP_SECRET, if set, must be at least 32 characters');
   return problems;
 }
