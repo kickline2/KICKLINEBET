@@ -3,9 +3,10 @@ import {
   statusPill, reauthFields,
 } from './core.js';
 import { betCard } from './views.js';
+import { lineChart, barChart, rankBars } from './charts.js';
 
 const NAV = [
-  ['#/admin', 'Overview'], ['#/admin/events', 'Events'], ['#/admin/bets', 'Bets'], ['#/admin/users', 'Users'],
+  ['#/admin', 'Dashboard'], ['#/admin/events', 'Events'], ['#/admin/bets', 'Bets'], ['#/admin/users', 'Users'],
   ['#/admin/withdrawals', 'Withdrawals'], ['#/admin/settings', 'Settings'], ['#/admin/audit', 'Audit log'],
 ];
 
@@ -55,39 +56,142 @@ export async function adminRouter(root, path, params) {
   return (routes[path] || overview)(root);
 }
 
-// ---------------- Overview ----------------
+// ---------------- Dashboard ----------------
+let dashDays = '30';
+let dashTimer = null;
+
+const compact = (minor) => {
+  const v = Number(minor || 0) / 100;
+  const a = Math.abs(v);
+  const str = a >= 1e6 ? `${(v / 1e6).toFixed(1)}M` : a >= 1e3 ? `${(v / 1e3).toFixed(1)}k` : v.toFixed(0);
+  return `GHS ${str}`;
+};
+
+function delta(cur, prev, { invert = false } = {}) {
+  if (!prev && !cur) return h('span', { class: 'delta flat' }, 'no change');
+  if (!prev) return h('span', { class: 'delta up' }, '▲ new');
+  const pct = ((cur - prev) / Math.abs(prev)) * 100;
+  const good = invert ? pct < 0 : pct > 0;
+  if (Math.abs(pct) < 0.5) return h('span', { class: 'delta flat' }, '● 0%');
+  return h('span', { class: `delta ${good ? 'up' : 'down'}`, title: 'vs previous period' }, `${pct > 0 ? '▲' : '▼'} ${Math.abs(pct).toFixed(0)}%`);
+}
+
+function kpi(label, value, sub, d) {
+  return h('div', { class: 'stat' },
+    h('div', { class: 'muted small' }, label),
+    h('div', { class: 'stat-val' }, value),
+    h('div', { class: 'stat-sub' }, d || null, sub ? h('span', { class: 'muted small' }, sub) : null));
+}
+
 async function overview(root) {
-  const o = await api('GET', '/api/admin/overview');
-  const stat = (label, value, sub) => h('div', { class: 'stat' }, h('div', { class: 'muted small' }, label), h('div', { class: 'stat-val' }, value), sub ? h('div', { class: 'muted small' }, sub) : null);
-  const sync = o.integrations.lastOddsSync;
+  clearInterval(dashTimer);
+  const range = h('div', { class: 'tabs', role: 'tablist', 'aria-label': 'Date range' },
+    [['7', '7 days'], ['30', '30 days'], ['90', '90 days']].map(([d, l]) =>
+      h('button', { class: `tab${dashDays === d ? ' active' : ''}`, role: 'tab', 'aria-selected': String(dashDays === d), onclick: () => { dashDays = d; overview(root).catch((e) => toast(e.message, 'error')); } }, l)));
+  const updated = h('span', { class: 'muted small' });
+  const body = h('div', { class: 'dash' }, h('div', { class: 'stats' }, Array.from({ length: 8 }, () => h('div', { class: 'stat skeleton-tile' }))));
   shell(root, '#/admin',
-    h('h1', null, 'Overview'),
+    h('div', { class: 'row-between' }, h('div', null, h('h1', null, 'Dashboard'), updated), range),
+    body);
+  const d = await api('GET', `/api/admin/dashboard?days=${dashDays}`);
+  updated.textContent = `Live data · updated ${new Date().toLocaleTimeString()} · refreshes every minute`;
+  const k = d.kpis;
+  const p = d.previous;
+  const sn = d.snapshot;
+  const margin = k.settled_stakes ? (k.ggr / k.settled_stakes) * 100 : 0;
+
+  const alerts = [];
+  if (sn.pending_withdrawals) alerts.push(h('a', { class: 'alert-item', href: '#/admin/withdrawals' }, `${sn.pending_withdrawals} withdrawal(s) waiting (${money(sn.pending_withdrawals_amount)})`));
+  if (sn.awaiting_results) alerts.push(h('a', { class: 'alert-item', href: '#/admin/events' }, `${sn.awaiting_results} event(s) need results`));
+  if (sn.kyc_pending) alerts.push(h('a', { class: 'alert-item', href: '#/admin/users' }, `${sn.kyc_pending} player(s) waiting for KYC review`));
+  if (!d.integrations.paystack) alerts.push(h('span', { class: 'alert-item' }, 'Paystack not connected: deposits are off'));
+  if (!d.integrations.oddsApi) alerts.push(h('span', { class: 'alert-item' }, 'Odds feed not connected: add ODDS_API_KEY'));
+
+  const labels = d.series.map((r) => r.day);
+  const stakesChart = h('div', { class: 'chart' });
+  const ggrChart = h('div', { class: 'chart' });
+  const cashChart = h('div', { class: 'chart' });
+  const leagues = h('div', { class: 'rank' });
+  const sync = d.integrations.lastOddsSync;
+  const statusTotal = Object.values(d.statusMix).reduce((a, b) => a + b, 0);
+
+  mount(body,
+    alerts.length ? h('div', { class: 'alert-strip', role: 'status' }, h('strong', null, 'Needs attention'), alerts) : null,
     h('div', { class: 'stats' },
-      stat('Players', o.users.total, `${o.users.today} new today`),
-      stat('Player balances (liability)', money(o.wallets.liabilities)),
-      stat('Open bets', o.bets.open, `${money(o.bets.open_stakes)} staked`),
-      stat('Max open payout', money(o.bets.open_liability)),
-      stat('Stakes today', money(o.bets.stakes_today)),
-      stat('Gross gaming revenue (30d)', money(o.bets.ggr_30d)),
-      stat('Deposits today', money(o.deposits.today)),
-      stat('Pending withdrawals', o.withdrawals.pending, money(o.withdrawals.pending_amount))),
-    o.eventsAwaitingResult ? h('div', { class: 'alert' }, `${o.eventsAwaitingResult} event(s) started over 2 hours ago still need results. `, h('a', { href: '#/admin/events' }, 'Settle now')) : null,
-    h('section', { class: 'card' }, h('h2', null, 'Integrations'),
-      h('dl', { class: 'kv' },
-        h('dt', null, 'Paystack payments'), h('dd', null, o.integrations.paystack ? 'Connected' : 'Not configured (set PAYSTACK_SECRET_KEY)'),
-        h('dt', null, 'Paystack transfers'), h('dd', null, o.integrations.paystackTransfers ? 'Automatic payouts on' : 'Manual payouts'),
-        h('dt', null, 'Odds feed'), h('dd', null, o.integrations.oddsApi ? 'The Odds API connected' : 'Not configured (set ODDS_API_KEY)'),
-        h('dt', null, 'Last odds sync'), h('dd', null, sync ? `${fmtDateTime(sync.at)} · ${sync.leaguesAvailable ?? '?'} leagues in season · API credits left this month: ${sync.remaining ?? '?'} · used today: ${sync.creditsUsedToday ?? 0}/${sync.dailyBudget ?? '?'}` : 'Never')),
-      o.integrations.oddsApi ? h('button', { class: 'btn btn-ghost', onclick: (e) => busy(e.target, async () => {
-        const r = await api('POST', '/api/admin/odds/sync');
-        if (!r.ok) { toast(r.reason || 'Sync failed', 'error'); return; }
-        const vals = Object.values(r.sports || {});
-        const events = vals.reduce((a, s) => a + s.upserted, 0);
-        const errors = vals.filter((s) => s.error).length;
-        const why = { daily_credit_budget: `Today's API credit budget is used (${r.creditsUsedToday}/${r.dailyBudget}); more leagues sync tomorrow.`, monthly_quota_reserve: 'Odds API monthly credits are nearly exhausted; upgrade your plan or wait for the reset.', time: 'Click again to continue.' }[r.stoppedBy] || '';
-        toast(`Synced ${r.processed} of ${r.leaguesAvailable} leagues (${events} matches updated${errors ? `, ${errors} errors` : ''}). ${r.remainingDue ? `${r.remainingDue} leagues still due. ` : ''}${why}`, errors ? 'error' : 'success');
-        overview(root);
-      }).catch(swallow) }, 'Sync odds now') : null));
+      kpi('Gross gaming revenue', money(k.ggr), `${margin.toFixed(1)}% hold`, delta(k.ggr, p.ggr)),
+      kpi('Stakes', money(k.stakes), `${k.bets} bets`, delta(k.stakes, p.stakes)),
+      kpi('Payouts', money(k.payouts), null, delta(k.payouts, p.payouts, { invert: true })),
+      kpi('Active bettors', String(k.active_bettors), `${k.new_players} new players`, delta(k.active_bettors, p.active_bettors)),
+      kpi('Deposits', money(k.deposits), null, delta(k.deposits, p.deposits)),
+      kpi('Withdrawals paid', money(k.withdrawals), `net ${money(k.deposits - k.withdrawals)}`, delta(k.withdrawals, p.withdrawals, { invert: true })),
+      kpi('Player balances', money(sn.balances), `${sn.players} players`),
+      kpi('Open bets', String(sn.open_bets), `max payout ${money(sn.open_liability)}`)),
+    h('div', { class: 'grid-2 dash-grid' },
+      h('section', { class: 'card' }, h('h2', null, 'Stakes vs payouts'), h('p', { class: 'muted small' }, 'Daily, GHS'), stakesChart),
+      h('section', { class: 'card' }, h('h2', null, 'Daily GGR'), h('p', { class: 'muted small' }, 'Settled stakes minus payouts. Below zero = players won.'), ggrChart)),
+    h('div', { class: 'grid-2 dash-grid' },
+      h('section', { class: 'card' }, h('h2', null, 'Deposits vs withdrawals'), h('p', { class: 'muted small' }, 'Daily, GHS'), cashChart),
+      h('section', { class: 'card' }, h('h2', null, 'Top leagues by stake'), h('p', { class: 'muted small' }, `Last ${d.days} days`), leagues)),
+    h('div', { class: 'grid-2 dash-grid' },
+      h('section', { class: 'card' }, h('h2', null, 'Risk: biggest liabilities'), h('p', { class: 'muted small' }, 'Open single bets per selection. Consider suspending or shortening odds on outliers.'),
+        d.exposure.length ? h('div', { class: 'table-scroll' }, h('table', { class: 'table' },
+          h('thead', null, h('tr', null, ['Selection', 'Event', 'Bets', 'Staked', 'Liability'].map((x, i) => h('th', { class: i > 1 ? 'num' : '' }, x)))),
+          h('tbody', null, d.exposure.map((x) => h('tr', null,
+            h('td', null, h('strong', null, x.selection), h('div', { class: 'muted small' }, x.market)),
+            h('td', null, x.event, h('div', { class: 'muted small' }, fmtDateTime(x.start_time))),
+            h('td', { class: 'num' }, x.bets), h('td', { class: 'num' }, money(x.stakes)), h('td', { class: 'num neg' }, money(x.liability))))))) : h('p', { class: 'muted' }, 'No open single bets.')),
+      h('section', { class: 'card' }, h('h2', null, 'Biggest bets'), h('p', { class: 'muted small' }, `Last ${d.days} days`),
+        d.bigBets.length ? h('div', { class: 'table-scroll' }, h('table', { class: 'table' },
+          h('thead', null, h('tr', null, ['Player', 'Type', 'Stake', 'Odds', 'Status'].map((x, i) => h('th', { class: i === 2 || i === 3 ? 'num' : '' }, x)))),
+          h('tbody', null, d.bigBets.map((b) => h('tr', { class: 'clickable', onclick: () => { location.hash = `#/admin/users/${b.user_id}`; } },
+            h('td', null, b.display_name, h('div', { class: 'muted small' }, fmtDateTime(b.created_at))),
+            h('td', null, b.legs > 1 ? `${b.legs}-fold` : 'Single'),
+            h('td', { class: 'num' }, money(b.stake)), h('td', { class: 'num' }, Number(b.total_odds).toFixed(2)),
+            h('td', null, statusPill(b.status))))))) : h('p', { class: 'muted' }, 'No bets yet.'))),
+    h('div', { class: 'grid-2 dash-grid' },
+      h('section', { class: 'card' }, h('h2', null, 'Bet outcomes'), h('p', { class: 'muted small' }, `Bets placed in the last ${d.days} days`),
+        statusTotal ? h('div', { class: 'outcomes' }, ['open', 'won', 'lost', 'void'].map((st) => h('div', { class: 'outcome' },
+          h('div', { class: 'stat-val' }, String(d.statusMix[st] || 0)), statusPill(st),
+          h('div', { class: 'muted small' }, `${(((d.statusMix[st] || 0) / statusTotal) * 100).toFixed(0)}%`)))) : h('p', { class: 'muted' }, 'No bets yet.')),
+      h('section', { class: 'card' }, h('h2', null, 'Operations'),
+        h('dl', { class: 'kv' },
+          h('dt', null, 'Upcoming events'), h('dd', null, String(sn.upcoming_events)),
+          h('dt', null, 'Paystack'), h('dd', null, d.integrations.paystack ? (d.integrations.paystackTransfers ? 'Connected · automatic payouts' : 'Connected · manual payouts') : 'Not configured'),
+          h('dt', null, 'Odds feed'), h('dd', null, d.integrations.oddsApi ? 'Connected' : 'Not configured (add ODDS_API_KEY)'),
+          h('dt', null, 'Last odds sync'), h('dd', null, sync ? `${fmtDateTime(sync.at)} · ${sync.leaguesAvailable ?? '?'} leagues in season` : 'Never'),
+          h('dt', null, 'API credits'), h('dd', null, sync ? `${sync.remaining ?? '?'} left this month · ${sync.creditsUsedToday ?? 0}/${sync.dailyBudget ?? '?'} used today` : '—')),
+        d.integrations.oddsApi ? h('button', { class: 'btn btn-ghost', onclick: (e) => busy(e.target, async () => {
+          const r = await api('POST', '/api/admin/odds/sync');
+          if (!r.ok) { toast(r.reason || 'Sync failed', 'error'); return; }
+          const vals = Object.values(r.sports || {});
+          const events = vals.reduce((a, x) => a + x.upserted, 0);
+          const errors = vals.filter((x) => x.error).length;
+          const why = { daily_credit_budget: `Today's API credit budget is used (${r.creditsUsedToday}/${r.dailyBudget}); more leagues sync tomorrow.`, monthly_quota_reserve: 'Odds API monthly credits are nearly exhausted; upgrade your plan or wait for the reset.', time: 'Click again to continue.' }[r.stoppedBy] || '';
+          toast(`Synced ${r.processed} of ${r.leaguesAvailable} leagues (${events} matches updated${errors ? `, ${errors} errors` : ''}). ${r.remainingDue ? `${r.remainingDue} leagues still due. ` : ''}${why}`, errors ? 'error' : 'success');
+          overview(root);
+        }).catch(swallow) }, 'Sync odds now') : null)));
+
+  const redraw = [
+    lineChart(stakesChart, { labels, fmt: money, axisFmt: compact, series: [
+      { name: 'Stakes', cls: 's1', values: d.series.map((r) => r.stakes) },
+      { name: 'Payouts', cls: 's2', values: d.series.map((r) => r.payouts) },
+    ] }),
+    barChart(ggrChart, { labels, fmt: money, axisFmt: compact, negCls: 's2', series: [{ name: 'GGR', cls: 's1', values: d.series.map((r) => r.ggr) }] }),
+    barChart(cashChart, { labels, fmt: money, axisFmt: compact, series: [
+      { name: 'Deposits', cls: 's1', values: d.series.map((r) => r.deposits) },
+      { name: 'Withdrawals', cls: 's2', values: d.series.map((r) => r.withdrawals) },
+    ] }),
+  ];
+  if (d.topLeagues.length) rankBars(leagues, d.topLeagues, { label: (r) => r.league, sub: (r) => `${r.sport} · ${r.bets} bets`, value: (r) => Number(r.stakes), fmt: money });
+  else mount(leagues, h('p', { class: 'muted' }, 'No bets yet.'));
+
+  let rt;
+  const onResize = () => { clearTimeout(rt); rt = setTimeout(() => { if (stakesChart.isConnected) redraw.forEach((f) => f()); else window.removeEventListener('resize', onResize); }, 150); };
+  window.addEventListener('resize', onResize);
+  dashTimer = setInterval(() => {
+    if (!body.isConnected) { clearInterval(dashTimer); return; }
+    if (document.visibilityState === 'visible' && !document.querySelector('.modal-overlay')) overview(root).catch(swallow);
+  }, 60_000);
 }
 
 // ---------------- Events ----------------
