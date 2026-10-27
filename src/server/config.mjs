@@ -72,13 +72,21 @@ export const config = {
     return env('ODDS_API_KEY', '');
   },
   get oddsApiSports() {
-    return env('ODDS_API_SPORTS', 'soccer_epl,soccer_uefa_champs_league')
+    return env('ODDS_API_SPORTS', 'all')
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean);
   },
+  // Optional: limit 'all' to some sport groups, e.g. "soccer,basketball,tennis"
+  get oddsApiGroups() {
+    return env('ODDS_API_GROUPS', '')
+      .split(',')
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+  },
+  // Each region multiplies API credit usage; one region is plenty for consensus pricing.
   get oddsApiRegions() {
-    return env('ODDS_API_REGIONS', 'uk,eu');
+    return env('ODDS_API_REGIONS', 'eu');
   },
   get oddsMargin() {
     const m = Number(env('ODDS_MARGIN', '0.05'));

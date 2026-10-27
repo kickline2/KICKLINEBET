@@ -54,28 +54,51 @@ const EVENT_SQL = `
 
 export async function listSports() {
   const { rows } = await query(
-    `SELECT sport_key AS key, max(sport_title) AS title, count(*)::int AS events
-       FROM events WHERE status = 'scheduled' AND start_time > now()
-      GROUP BY sport_key ORDER BY title`
+    `SELECT sport_title AS "group", sport_key AS key, coalesce(league, sport_title) AS league, count(*)::int AS events
+       FROM events e
+      WHERE status = 'scheduled' AND start_time > now()
+        AND EXISTS (SELECT 1 FROM markets m WHERE m.event_id = e.id AND m.status IN ('open','suspended'))
+      GROUP BY 1, 2, 3
+      ORDER BY CASE WHEN sport_title = 'Football' THEN 0 ELSE 1 END, 1, 4 DESC, 3`
   );
-  return { sports: rows };
+  const groups = [];
+  for (const r of rows) {
+    let g = groups.find((x) => x.title === r.group);
+    if (!g) groups.push((g = { title: r.group, events: 0, leagues: [] }));
+    g.events += r.events;
+    g.leagues.push({ key: r.key, league: r.league, events: r.events });
+  }
+  return { groups };
 }
 
 export async function listEvents(ctx) {
-  const sport = v.str(ctx.url.searchParams.get('sport'), 'sport', { optional: true, max: 80, pattern: /^[a-z0-9_]+$/ });
-  const q = v.str(ctx.url.searchParams.get('q'), 'q', { optional: true, max: 60 });
+  const sp = ctx.url.searchParams;
+  const sport = v.str(sp.get('sport'), 'sport', { optional: true, max: 80, pattern: /^[a-z0-9_]+$/ });
+  const league = v.str(sp.get('league'), 'league', { optional: true, max: 120 });
+  const group = v.str(sp.get('group'), 'group', { optional: true, max: 80 });
+  const q = v.str(sp.get('q'), 'q', { optional: true, max: 60 });
   const params = [];
   let where = "WHERE e.status = 'scheduled' AND e.start_time > now()";
   if (sport) {
     params.push(sport);
     where += ` AND e.sport_key = $${params.length}`;
   }
+  if (league) {
+    params.push(league);
+    where += ` AND coalesce(e.league, e.sport_title) = $${params.length}`;
+  }
+  if (group) {
+    params.push(group);
+    where += ` AND e.sport_title = $${params.length}`;
+  }
   if (q) {
     params.push(`%${q.replace(/[%_\\]/g, '\\$&')}%`);
     where += ` AND (e.home_team ILIKE $${params.length} OR e.away_team ILIKE $${params.length} OR e.league ILIKE $${params.length})`;
   }
   const sql = `${EVENT_SQL.replace('%MARKET_FILTER%', "AND m.status IN ('open','suspended')")}
-    WHERE e.id IN (SELECT e.id FROM events e ${where} ORDER BY e.start_time, e.id LIMIT 200)
+    WHERE e.id IN (SELECT e.id FROM events e ${where}
+                     AND EXISTS (SELECT 1 FROM markets m WHERE m.event_id = e.id AND m.status IN ('open','suspended'))
+                   ORDER BY e.start_time, e.id LIMIT 300)
     ORDER BY e.start_time, e.id, m.id, s.sort_order, s.id`;
   const { rows } = await query(sql, params);
   return { events: shapeEvents(rows).filter((e) => e.markets.length) };

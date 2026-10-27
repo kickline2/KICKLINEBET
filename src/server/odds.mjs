@@ -54,7 +54,7 @@ export function buildH2H(apiEvent, margin) {
   return out.sort((a, b) => a.sort - b.sort);
 }
 
-async function upsertEvent(sportKey, ev, margin) {
+async function upsertEvent(sport, ev, margin) {
   const start = new Date(ev.commence_time);
   if (!(start > new Date())) return 'skipped';
   const sels = buildH2H(ev, margin);
@@ -62,11 +62,12 @@ async function upsertEvent(sportKey, ev, margin) {
   return tx(async (db) => {
     const e = (await db.query(
       `INSERT INTO events(sport_key, sport_title, league, home_team, away_team, start_time, source, external_id)
-       VALUES ($1,$2,$2,$3,$4,$5,'oddsapi',$6)
-       ON CONFLICT (external_id) DO UPDATE SET start_time = EXCLUDED.start_time, updated_at = now()
+       VALUES ($1,$2,$3,$4,$5,$6,'oddsapi',$7)
+       ON CONFLICT (external_id) DO UPDATE SET start_time = EXCLUDED.start_time, sport_title = EXCLUDED.sport_title,
+         league = EXCLUDED.league, updated_at = now()
          WHERE events.status = 'scheduled'
        RETURNING id`,
-      [sportKey, ev.sport_title || sportKey, ev.home_team, ev.away_team, start, `oddsapi:${ev.id}`]
+      [sport.key, sport.group, sport.title, ev.home_team, ev.away_team, start, `oddsapi:${ev.id}`]
     )).rows[0];
     if (!e) return 'skipped';
     let m = (await db.query("SELECT * FROM markets WHERE event_id = $1 AND type = 'h2h' FOR UPDATE", [e.id])).rows[0];
@@ -120,34 +121,93 @@ async function settleFromScores(sportKey) {
   return settled;
 }
 
-export async function syncOdds({ force = false, actorId = null } = {}) {
+const GROUP_NAMES = { Soccer: 'Football' };
+let sportsCache = null;
+
+/** Every in-season league The Odds API covers (this call is free of quota). */
+export async function listFeedSports() {
+  if (sportsCache && Date.now() - sportsCache.at < 6 * 3600_000) return sportsCache.list;
+  const { data } = await oddsApi('/sports', {});
+  const wanted = config.oddsApiSports;
+  const groups = config.oddsApiGroups;
+  const list = data
+    .filter((x) => x.active && !x.has_outrights)
+    .filter((x) => wanted.includes('all') || wanted.includes(x.key))
+    .filter((x) => !groups.length || groups.includes(String(x.group).toLowerCase()))
+    .map((x) => ({ key: x.key, group: GROUP_NAMES[x.group] || x.group, title: x.title, description: x.description }));
+  sportsCache = { at: Date.now(), list };
+  return list;
+}
+
+async function loadState() {
+  const v = (await query("SELECT value FROM settings WHERE key = 'odds_sync_state'")).rows[0]?.value;
+  return v && typeof v === 'object' ? { sports: {}, ...v } : { sports: {} };
+}
+async function saveState(state) {
+  await query(
+    `INSERT INTO settings(key, value) VALUES ('odds_sync_state', $1)
+     ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = now()`,
+    [JSON.stringify(state)]
+  );
+}
+
+/** Only ask for scores where we actually have started, unsettled feed events (saves quota). */
+async function needsScores(sportKey) {
+  const { rows } = await query(
+    `SELECT 1 FROM events WHERE sport_key = $1 AND source = 'oddsapi' AND status = 'scheduled'
+       AND start_time < now() - interval '90 minutes' AND start_time > now() - interval '3 days' LIMIT 1`,
+    [sportKey]
+  );
+  return rows.length > 0;
+}
+
+/**
+ * Sync leagues stalest-first until the time budget is used. Each run continues
+ * where the previous one stopped, so every league is covered across runs even
+ * though serverless functions have short time limits.
+ */
+export async function syncOdds({ force = false, actorId = null, budgetMs = 20_000 } = {}) {
   if (!config.oddsApiKey) return { ok: false, reason: 'ODDS_API_KEY not set' };
-  if (!force) {
-    const last = (await query("SELECT value FROM settings WHERE key = 'odds_sync'")).rows[0]?.value;
-    if (last?.at && Date.now() - new Date(last.at).getTime() < config.oddsSyncIntervalMinutes * 60_000)
-      return { ok: true, skipped: true, reason: 'interval not elapsed' };
-  }
-  const summary = { ok: true, at: new Date().toISOString(), sports: {}, remaining: null };
-  for (const sport of config.oddsApiSports) {
+  const started = Date.now();
+  const interval = config.oddsSyncIntervalMinutes * 60_000;
+  const sports = await listFeedSports();
+  const state = await loadState();
+  const due = sports
+    .map((sp) => ({ sp, at: state.sports[sp.key]?.at ? new Date(state.sports[sp.key].at).getTime() : 0 }))
+    .filter((x) => force || Date.now() - x.at >= interval)
+    .sort((a, b) => a.at - b.at);
+  const summary = { ok: true, at: new Date().toISOString(), leaguesAvailable: sports.length, processed: 0, remainingDue: 0, sports: {}, remaining: state.remaining ?? null };
+  for (const { sp } of due) {
+    if (Date.now() - started > budgetMs) {
+      summary.remainingDue++;
+      continue;
+    }
     const s = { upserted: 0, skipped: 0, kept: 0, settled: 0, error: null };
     try {
-      const { data, remaining } = await oddsApi(`/sports/${sport}/odds`, {
+      const { data, remaining } = await oddsApi(`/sports/${sp.key}/odds`, {
         regions: config.oddsApiRegions, markets: 'h2h', oddsFormat: 'decimal', dateFormat: 'iso',
       });
-      summary.remaining = remaining;
-      for (const ev of data) s[await upsertEvent(sport, ev, config.oddsMargin)]++;
-      if (config.oddsAutoSettle) s.settled = await settleFromScores(sport);
+      if (remaining !== null) summary.remaining = remaining;
+      for (const ev of data) s[await upsertEvent(sp, ev, config.oddsMargin)]++;
+      if (config.oddsAutoSettle && (await needsScores(sp.key))) s.settled = await settleFromScores(sp.key);
     } catch (e) {
-      console.error('[odds] sync error', sport, e.message);
+      console.error('[odds] sync error', sp.key, e.message);
       s.error = e.message;
     }
-    summary.sports[sport] = s;
+    state.sports[sp.key] = { at: new Date().toISOString(), title: sp.title, group: sp.group, events: s.upserted, error: s.error };
+    summary.sports[sp.key] = s;
+    summary.processed++;
+    // Out of quota: stop early instead of burning through every league with errors.
+    if (s.error && /\b(401|429)\b/.test(s.error)) break;
   }
+  state.remaining = summary.remaining;
+  state.lastRun = summary.at;
+  await saveState(state);
   await query(
     `INSERT INTO settings(key, value) VALUES ('odds_sync', $1)
      ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = now()`,
-    [JSON.stringify(summary)]
+    [JSON.stringify({ at: summary.at, remaining: summary.remaining, leaguesAvailable: summary.leaguesAvailable, processed: summary.processed, remainingDue: summary.remainingDue })]
   );
-  await audit({ query }, { actorId, action: 'odds.sync', details: summary });
+  if (summary.processed) await audit({ query }, { actorId, action: 'odds.sync', details: { processed: summary.processed, remainingDue: summary.remainingDue, remaining: summary.remaining } });
   return summary;
 }

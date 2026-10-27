@@ -436,7 +436,8 @@ export async function putSettings(ctx) {
 export async function oddsSync(ctx) {
   requireAdmin(ctx);
   await rateLimit(`odds-sync:${ctx.user.id}`, 5, 600);
-  return syncOdds({ force: true, actorId: ctx.user.id });
+  // Synchronous functions have a short time limit: sync what fits, stalest first.
+  return syncOdds({ force: true, actorId: ctx.user.id, budgetMs: 6_000 });
 }
 
 export async function auditLog(ctx) {
