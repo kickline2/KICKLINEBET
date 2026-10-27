@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "node scripts/dev-server.mjs",
     "migrate": "node scripts/migrate.mjs",
@@ -11,6 +13,7 @@
     "test": "node --test --test-concurrency=1 tests/*.test.mjs"
   },
   "dependencies": {
+    "@netlify/blobs": "^11.1.7",
     "pg": "^8.13.1"
   }
 }
