@@ -46,7 +46,7 @@ Netlify's drag-and-drop deploy cannot run functions, so deploy with Git or the C
 
 1. **Put the code in a Git repo** (GitHub/GitLab) and in Netlify choose *Add new project → Import an existing project*. Build settings come from `netlify.toml` (publish `public`, functions in `netlify/functions`).
    *Or* with the CLI: `npm i -g netlify-cli && netlify login && netlify link && netlify deploy --build --prod`.
-2. **Create the database**: in the Netlify project go to *Extensions → Neon / Netlify DB* and create a database (or run `npx netlify db init`). This sets `NETLIFY_DATABASE_URL` automatically. Tables are created on first request.
+2. **Create the database**: in the Netlify project go to *Extensions → Neon / Netlify DB* and create a database (or run `npx netlify db init`). This provides `NETLIFY_DB_URL` automatically. Tables are created on first request.
 3. **Set environment variables** (*Project configuration → Environment variables*), see `.env.example`. At minimum: `APP_SECRET`, `SITE_URL`, `ADMIN_EMAILS`.
 4. **Redeploy**, then register with an email from `ADMIN_EMAILS`, go to *Account → Two-factor authentication*, enable 2FA, and open *Admin*.
 5. **Paystack**: add `PAYSTACK_SECRET_KEY`/`PAYSTACK_PUBLIC_KEY` (test keys first). In the Paystack dashboard set the webhook URL to `https://YOUR-SITE/api/webhooks/paystack`. For automatic payouts, enable Transfers on your Paystack business and set `PAYSTACK_TRANSFERS_ENABLED=true`; otherwise pay out manually and click *Mark paid*.
