@@ -2,7 +2,8 @@
 // secrets never live in the repository.
 
 const env = (k, d) => {
-  const v = process.env[k];
+  // Netlify Functions expose env via Netlify.env as well as process.env.
+  const v = process.env[k] ?? globalThis.Netlify?.env?.get?.(k);
   return v === undefined || v === '' ? d : v;
 };
 const int = (k, d) => {
@@ -17,7 +18,7 @@ const bool = (k, d) => {
 
 export const config = {
   get databaseUrl() {
-    return env('DATABASE_URL', env('NETLIFY_DATABASE_URL', ''));
+    return env('DATABASE_URL', env('NETLIFY_DB_URL', env('NETLIFY_DATABASE_URL', '')));
   },
   get appSecret() {
     return env('APP_SECRET', '');

@@ -6,12 +6,20 @@ import { MIGRATIONS } from './schema.mjs';
 pg.types.setTypeParser(20, (v) => (v === null ? null : Number(v)));
 
 let pool;
+let poolUrl;
 let migrated = null;
 
 export function getPool() {
+  const url = config.databaseUrl;
+  if (!url) throw new Error('Database URL not configured');
+  // Netlify Database may rotate credentials between invocations; rebuild the pool if so.
+  if (pool && poolUrl !== url) {
+    const old = pool;
+    pool = undefined;
+    old.end().catch(() => {});
+  }
   if (!pool) {
-    const url = config.databaseUrl;
-    if (!url) throw new Error('Database URL not configured');
+    poolUrl = url;
     const local = /@(localhost|127\.0\.0\.1)[:/]/.test(url);
     pool = new pg.Pool({
       connectionString: url,
@@ -19,6 +27,7 @@ export function getPool() {
       idleTimeoutMillis: 10_000,
       connectionTimeoutMillis: 10_000,
       ssl: local || /sslmode=disable/.test(url) ? false : { rejectUnauthorized: true },
+      // connectionString may carry its own sslmode; our explicit ssl config wins.
     });
     pool.on('error', (err) => console.error('[db] idle client error', err.message));
   }
